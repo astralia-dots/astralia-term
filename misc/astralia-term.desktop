@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Exec=astralia-term
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=shell;prompt;command;commandline;
+
+Name=Astralia Term
+GenericName=Terminal
+Comment=A lightweight, CPU-rendered terminal emulator

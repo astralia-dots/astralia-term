@@ -1,0 +1,4 @@
+option('wayland', type: 'feature', value: 'auto', description: 'Wayland backend')
+option('x11', type: 'feature', value: 'auto', description: 'X11 backend')
+option('westmere', type: 'boolean', value: true,
+       description: 'Use -march=westmere for release builds (ThinkPad X201 target)')
