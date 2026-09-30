@@ -393,7 +393,7 @@ collect_frame_image(void *user, struct graphics_placement *p, int row, int col) 
 /* Collects the visible placements and returns a hash of them: when it
  * changes, an image appeared, vanished or moved, and rows it covers that
  * aren't dirty would keep stale pixels, so the frame is redrawn in full.
- * ponytail: scans up to 254 rows above the view every frame; keep an anchor
+ * Scans up to 254 rows above the view every frame; keep an anchor
  * index if that shows in profiles. */
 static uint64_t
 collect_frame_images(struct term *t) {

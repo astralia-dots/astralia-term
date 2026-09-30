@@ -41,7 +41,7 @@ A non-virtual placement (kitty `a=T`/`a=p`, sixel) is written into the grid as `
 - `draw_image_cell()`: removed; `ATTR_IMAGE` cells draw as blank.
 - [NEW] `draw_images(r, t, row_idx, dst)`: called in `draw_row()` after the glyph loop, before the cursor; for each placement from `graphics_each_anchor()` covering this view row, blit the tiles in this row with the existing `blit_placeholder_image()`, clipped to the grid width by the row's clip region.
 - `render_frame()`: compute a hash of the visible placements' `(handle, row, col)` once per frame; if it differs from `r->last_images_hash`, force a full redraw. This covers an anchor being erased, scrolled or reflowed while its lower rows are not dirty.
-- `ponytail:` note: the anchor scan reads up to 254 rows above the view per frame; add an anchor index if it shows in profiles.
+- Note: the anchor scan reads up to 254 rows above the view per frame; add an anchor index if it shows in profiles.
 
 ### [MODIFY] `src/render/render.h`
 

@@ -105,7 +105,7 @@ line_text(struct term *t, int top, int n) {
     return buf;
 }
 
-/* ponytail: the cursor's line on the normal screen stands in for the shell's
+/* The cursor's line on the normal screen stands in for the shell's
  * input area, so output still waiting for its newline loses its links too.
  * OSC 133;B/C marks would make it exact. */
 static bool
@@ -169,7 +169,7 @@ void url_row_links(struct term *t, int row, bool *mask) {
     if (typing)
         return;
 
-    /* ponytail: rescans the whole wrapped line for each of its rows; cache
+    /* Rescans the whole wrapped line for each of its rows; cache
      * per-line spans if that shows up. */
     char *buf = line_text(t, top, n);
     if (buf == NULL)
