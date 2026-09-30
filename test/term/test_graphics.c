@@ -363,7 +363,7 @@ test_virtual_placement_defaults(void) {
 }
 
 /* a=p without U=1: creates a non-virtual placement at the cursor, writing
- * ATTR_IMAGE cells row by row and advancing the cursor exactly as printed
+ * one ATTR_IMAGE anchor cell and advancing the cursor exactly as printed
  * text would -- landing one column past the placement's right edge, on the
  * row the last cell was written to. */
 static void
@@ -381,21 +381,17 @@ test_nonvirtual_placement(void) {
     send_apc(&t, "a=p,i=90,c=3,r=2,p=5", NULL, 0);
     CHECK(strcmp(reply, "\x1b_Gi=90;OK\x1b\\") == 0);
 
-    /* Cells carry a store-wide handle, not the client's p= key. */
+    /* The anchor carries a store-wide handle, not the client's p= key. */
     uint32_t handle = grid_row(t.grid, 1)->cells[2].ul;
     struct graphics_placement *p = graphics_placement_get_nonvirtual(&t.graphics, handle);
     CHECK(p != NULL && p->image_id == 90 && p->placement_id == 5 && p->cols == 3 && p->rows == 2);
 
-    for (int col = 2; col < 5; col++) {
-        struct cell *c = &grid_row(t.grid, 1)->cells[col];
-        CHECK(c->attrs & ATTR_IMAGE);
-        CHECK(c->ul == handle);
-        CHECK(c->tile_row == 0 && c->tile_col == col - 2);
-    }
-    for (int col = 2; col < 5; col++) {
-        struct cell *c = &grid_row(t.grid, 2)->cells[col];
-        CHECK(c->attrs & ATTR_IMAGE);
-        CHECK(c->tile_row == 1 && c->tile_col == col - 2);
+    CHECK(grid_row(t.grid, 1)->cells[2].attrs & ATTR_IMAGE);
+    for (int r = 1; r < 3; r++) {
+        for (int col = 2; col < 5; col++) {
+            if (r != 1 || col != 2)
+                CHECK(!(grid_row(t.grid, r)->cells[col].attrs & ATTR_IMAGE));
+        }
     }
 
     CHECK(t.cursor.row == 2); /* start row (1) + rows (2) - 1 */
@@ -450,8 +446,8 @@ test_nonvirtual_placement_via_transmit(void) {
     term_destroy(&t);
 }
 
-/* a=d,d=i additionally blanks the ATTR_IMAGE cells a non-virtual placement
- * occupies, not just the placement/image bookkeeping. */
+/* a=d,d=i additionally blanks a non-virtual placement's anchor cell, not
+ * just the placement/image bookkeeping. */
 static void
 test_delete_erases_nonvirtual_cells(void) {
     struct term t;
@@ -514,10 +510,10 @@ test_anonymous_transmit_no_reply(void) {
      * replace the first one silently, not accumulate or error. */
     send_apc(&t, "f=32,s=2,v=2,a=T,c=2,r=2,p=8", px, sizeof(px));
     CHECK(reply[0] == '\0');
-    CHECK(grid_row(t.grid, 1)->cells[0].attrs & ATTR_IMAGE);
+    CHECK(grid_row(t.grid, 1)->cells[2].attrs & ATTR_IMAGE);
 
     /* Each anonymous image is its own image with its own placement: the first
-     * one's cells (which may be in scrollback by now) keep showing it. */
+     * one's anchor (which may be in scrollback by now) keeps showing it. */
     CHECK(grid_row(t.grid, 1)->cells[2].ul != first); /* second image starts at the cursor */
     CHECK(graphics_placement_get_nonvirtual(&t.graphics, first) != NULL);
 
@@ -564,7 +560,7 @@ test_placement_ids_are_per_image(void) {
     CHECK(p1 != NULL && p1->image_id == 1);
     CHECK(p2 != NULL && p2->image_id == 2);
 
-    /* Re-placing (image 1, p=1) replaces the old placement and blanks its cells. */
+    /* Re-placing (image 1, p=1) replaces the old placement and blanks its anchor. */
     t.cursor.row = 3;
     t.cursor.col = 0;
     send_apc(&t, "a=p,i=1,p=1,c=1,r=1", NULL, 0);
@@ -642,7 +638,7 @@ test_cursor_stays_with_c1(void) {
     t.cursor.row = 1;
     t.cursor.col = 3;
     send_apc(&t, "f=32,s=2,v=2,i=1,a=T,c=2,r=2,C=1", px, sizeof(px));
-    CHECK(grid_row(t.grid, 2)->cells[4].attrs & ATTR_IMAGE);
+    CHECK(grid_row(t.grid, 1)->cells[3].attrs & ATTR_IMAGE);
     CHECK(t.cursor.row == 1 && t.cursor.col == 3);
 
     /* Near the bottom the placement scrolls the screen; the cursor still ends
@@ -651,8 +647,8 @@ test_cursor_stays_with_c1(void) {
     t.cursor.col = 0;
     send_apc(&t, "a=p,i=1,c=2,r=2,C=1", NULL, 0);
     CHECK(t.cursor.row == 3 && t.cursor.col == 0);
-    CHECK(grid_row(t.grid, 3)->cells[0].attrs & ATTR_IMAGE);
-    CHECK(grid_row(t.grid, 4)->cells[0].attrs & ATTR_IMAGE);
+    CHECK(grid_row(t.grid, 3)->cells[0].attrs & ATTR_IMAGE); /* the anchor scrolled up with it */
+    CHECK(!(grid_row(t.grid, 4)->cells[0].attrs & ATTR_IMAGE));
 
     term_destroy(&t);
 }
@@ -669,15 +665,14 @@ test_delete_by_position(void) {
     t.cursor.col = 5;
     send_apc(&t, "f=32,s=2,v=2,i=2,a=T,c=2,r=2", px, sizeof(px));   /* rows 3-4, cols 5-6 */
 
-    /* d=p: the placement covering column 2, row 1 (1-based) -- image 1's. */
-    send_apc(&t, "a=d,d=p,x=2,y=1", NULL, 0);
+    /* d=p: the placement covering column 2, row 2 (1-based), off its anchor -- image 1's. */
+    send_apc(&t, "a=d,d=p,x=2,y=2", NULL, 0);
     CHECK(!(grid_row(t.grid, 0)->cells[0].attrs & ATTR_IMAGE));
-    CHECK(!(grid_row(t.grid, 1)->cells[1].attrs & ATTR_IMAGE));
     CHECK(grid_row(t.grid, 3)->cells[5].attrs & ATTR_IMAGE);
     CHECK(graphics_get(&t.graphics, 1) != NULL); /* lowercase keeps the data */
 
-    /* d=X: column 6 (1-based) crosses image 2; uppercase frees its data. */
-    send_apc(&t, "a=d,d=X,x=6", NULL, 0);
+    /* d=X: column 7 (1-based) crosses image 2 right of its anchor; uppercase frees its data. */
+    send_apc(&t, "a=d,d=X,x=7", NULL, 0);
     CHECK(!(grid_row(t.grid, 3)->cells[5].attrs & ATTR_IMAGE));
     CHECK(graphics_get(&t.graphics, 2) == NULL);
 
@@ -690,6 +685,35 @@ test_delete_by_position(void) {
     send_apc(&t, "a=d,d=C", NULL, 0);
     CHECK(!(grid_row(t.grid, 0)->cells[0].attrs & ATTR_IMAGE));
     CHECK(graphics_get(&t.graphics, 3) == NULL);
+
+    term_destroy(&t);
+}
+
+static void
+count_anchor(void *user, struct graphics_placement *p, int row, int col) {
+    (void)p;
+    int *hits = user;
+    CHECK(row == 0 && col == 1);
+    (*hits)++;
+}
+
+/* An anchor above the queried rows is reported while its image reaches them. */
+static void
+test_each_anchor(void) {
+    struct term t;
+    term_init(&t, 10, 6, &host, NULL);
+    term_set_cell_size(&t, 10, 10);
+
+    uint8_t px[2 * 2 * 4] = {0};
+    t.cursor.col = 1;
+    send_apc(&t, "f=32,s=2,v=2,i=1,a=T,c=2,r=3", px, sizeof(px)); /* rows 0-2, cols 1-2 */
+
+    int hits = 0;
+    graphics_each_anchor(&t, 2, 2, count_anchor, &hits);
+    CHECK(hits == 1);
+    hits = 0;
+    graphics_each_anchor(&t, 3, 5, count_anchor, &hits);
+    CHECK(hits == 0);
 
     term_destroy(&t);
 }
@@ -841,6 +865,7 @@ int main(void) {
     test_source_rectangle();
     test_cursor_stays_with_c1();
     test_delete_by_position();
+    test_each_anchor();
     test_temp_file_medium();
     test_shared_memory_medium();
     test_compressed_png();

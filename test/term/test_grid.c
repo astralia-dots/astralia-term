@@ -285,6 +285,45 @@ test_resize(void) {
 }
 
 static void
+test_resize_clip(void) {
+    struct term t;
+    term_init(&t, 10, 3, &host, NULL);
+
+    /* Unwrapped rows off the cursor line clip instead of wrapping, and come back */
+    feed(&t, "abcdefgh\r\n12345678\r\n");
+    term_resize(&t, 5, 3);
+    CHECK_ROW(&t, 0, "abcde");
+    CHECK_ROW(&t, 1, "12345");
+    CHECK_CURSOR(&t, 2, 0);
+    CHECK(t.grid->scrollback_used == 0);
+    term_resize(&t, 10, 3);
+    CHECK_ROW(&t, 0, "abcdefgh  ");
+    CHECK_ROW(&t, 1, "12345678  ");
+
+    /* An erase drops the hidden tail */
+    term_resize(&t, 5, 3);
+    feed(&t, "\x1b[1;3H\x1b[K");
+    term_resize(&t, 10, 3);
+    CHECK_ROW(&t, 0, "ab        ");
+    CHECK_ROW(&t, 1, "12345678  ");
+    term_destroy(&t);
+
+    /* A wrapped run holding an image anchor re-wraps and rejoins; the anchor rides along */
+    term_init(&t, 6, 3, &host, NULL);
+    feed(&t, "abcdefgh");
+    grid_row(t.grid, 0)->cells[2] = (struct cell){.ul = 1, .attrs = ATTR_IMAGE};
+    term_resize(&t, 4, 3);
+    CHECK_ROW(&t, 0, "ab d");
+    CHECK_ROW(&t, 1, "efgh");
+    CHECK(grid_row(t.grid, 0)->cells[2].attrs & ATTR_IMAGE);
+    term_resize(&t, 6, 3);
+    CHECK_ROW(&t, 0, "ab def");
+    CHECK_ROW(&t, 1, "gh    ");
+    CHECK(grid_row(t.grid, 0)->cells[2].attrs & ATTR_IMAGE && grid_row(t.grid, 0)->cells[2].ul == 1);
+    term_destroy(&t);
+}
+
+static void
 test_dec_graphics(void) {
     struct term t;
     term_init(&t, 3, 1, &host, NULL);
@@ -692,6 +731,21 @@ test_fastfetch_sixel_regression(void) {
             failures++;
         }
     }
+
+    /* Shrinking then widening restores the logo and box cell-for-cell */
+    struct cell *before = xmalloc((size_t)t.rows * t.cols * sizeof(struct cell));
+    for (int r = 0; r < t.rows; r++)
+        memcpy(&before[r * t.cols], grid_row(t.grid, r)->cells, t.cols * sizeof(struct cell));
+    term_resize(&t, 60, 47);
+    term_resize(&t, 187, 47);
+    for (int r = 0; r < t.rows; r++) {
+        if (memcmp(&before[r * t.cols], grid_row(t.grid, r)->cells, t.cols * sizeof(struct cell)) != 0) {
+            fprintf(stderr, "%s:%d: row %d changed across resize: [%s]\n", __FILE__, __LINE__, r,
+                    row_text(&t, r));
+            failures++;
+        }
+    }
+    free(before);
     term_destroy(&t);
 }
 
@@ -742,6 +796,7 @@ int main(void) {
     test_resize();
     test_dec_graphics();
     test_reflow();
+    test_resize_clip();
     test_combining();
     test_mode_reports();
     test_mouse_modes();

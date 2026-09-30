@@ -369,23 +369,64 @@ blit_placeholder_image(const struct renderer *r, pixman_image_t *dst,
     pixman_image_unref(src);
 }
 
-/* Draws an ATTR_IMAGE cell (a non-virtual placement, written directly into
- * the grid by graphics_place_nonvirtual()): unlike a placeholder cell, its
- * placement handle (ul) is already the lookup key, and tile_row/tile_col are
- * already resolved -- no diacritic decode, since the terminal synthesized
- * these cells itself rather than an app printing them. */
+/* ---- kitty graphics: non-virtual placements ---- */
+
+/* Placements visible this frame, with their anchor's view row and column.
+ * Rebuilt at the start of every frame, reused across rows like solid_img. */
+struct frame_image {
+    struct graphics_placement *plc;
+    int row, col;
+};
+static struct frame_image *frame_images;
+static size_t frame_images_n, frame_images_cap;
+
 static void
-draw_image_cell(const struct renderer *r, struct term *t, pixman_image_t *dst,
-                const struct cell *c, int x, int y) {
-    struct graphics_placement *plc = graphics_placement_get_nonvirtual(&t->graphics, c->ul);
-    if (plc == NULL || plc->cols <= 0 || plc->rows <= 0)
-        return;
-    if (c->tile_row >= plc->rows || c->tile_col >= plc->cols)
-        return;
-    struct graphics_image *img = graphics_get(&t->graphics, plc->image_id);
-    if (img == NULL)
-        return;
-    blit_placeholder_image(r, dst, img, plc, c->tile_row, c->tile_col, x, y);
+collect_frame_image(void *user, struct graphics_placement *p, int row, int col) {
+    const struct term *t = user;
+    if (frame_images_n == frame_images_cap) {
+        frame_images_cap = frame_images_cap != 0 ? frame_images_cap * 2 : 8;
+        frame_images = xrealloc(frame_images, frame_images_cap * sizeof(*frame_images));
+    }
+    frame_images[frame_images_n++] = (struct frame_image){p, row + t->view_offset, col};
+}
+
+/* Collects the visible placements and returns a hash of them: when it
+ * changes, an image appeared, vanished or moved, and rows it covers that
+ * aren't dirty would keep stale pixels, so the frame is redrawn in full.
+ * ponytail: scans up to 254 rows above the view every frame; keep an anchor
+ * index if that shows in profiles. */
+static uint64_t
+collect_frame_images(struct term *t) {
+    frame_images_n = 0;
+    graphics_each_anchor(t, -t->view_offset, t->rows - 1 - t->view_offset, collect_frame_image, t);
+
+    uint64_t h = 1469598103934665603ull; /* FNV-1a */
+    for (size_t i = 0; i < frame_images_n; i++) {
+        uint32_t v[3] = {frame_images[i].plc->handle, (uint32_t)frame_images[i].row,
+                         (uint32_t)frame_images[i].col};
+        for (size_t k = 0; k < sizeof(v); k++)
+            h = (h ^ ((const uint8_t *)v)[k]) * 1099511628211ull;
+    }
+    return h;
+}
+
+/* Draws the slices of this frame's placements that fall on view row row_idx,
+ * over whatever text is there; the row's clip region cuts them at the grid edge. */
+static void
+draw_images(const struct renderer *r, struct term *t, int row_idx, pixman_image_t *dst) {
+    const int cw = r->fonts->cell_width;
+    const int y = r->pad_y + row_idx * r->fonts->cell_height;
+    for (size_t i = 0; i < frame_images_n; i++) {
+        const struct frame_image *fi = &frame_images[i];
+        int tile_row = row_idx - fi->row;
+        if (tile_row < 0 || tile_row >= fi->plc->rows)
+            continue;
+        struct graphics_image *img = graphics_get(&t->graphics, fi->plc->image_id);
+        if (img == NULL)
+            continue;
+        for (int tc = 0; tc < fi->plc->cols && fi->col + tc < t->cols; tc++)
+            blit_placeholder_image(r, dst, img, fi->plc, tile_row, tc, r->pad_x + (fi->col + tc) * cw, y);
+    }
 }
 
 /* Draws cell c (already known to be a placeholder) at (x,y): resolves its
@@ -488,8 +529,7 @@ draw_row(struct renderer *r, struct term *t, int row_idx, pixman_image_t *dst) {
         int w = (col + 1 < t->cols && cells[col + 1].cp == CELL_SPACER) ? 2 * cw : cw;
 
         if (c->attrs & ATTR_IMAGE) {
-            placeholder_run.valid = false;
-            draw_image_cell(r, t, dst, c, x, y);
+            placeholder_run.valid = false; /* an anchor: drawn by draw_images() */
         } else {
             struct kitty_placeholder_cell pc = kitty_placeholder_decode(t, c->cp);
             if (pc.is_placeholder) {
@@ -509,6 +549,8 @@ draw_row(struct renderer *r, struct term *t, int row_idx, pixman_image_t *dst) {
             draw_decorations(r, dst, c, fg, x, y, w, links[col]);
     }
     free(links);
+
+    draw_images(r, t, row_idx, dst);
 
     /* Non-block cursors, and the hollow block when unfocused */
     if (cursor_here && !block) {
@@ -549,9 +591,11 @@ void render_frame(struct renderer *r, struct term *t, struct buffer *buf,
                   pixman_region32_t *damage) {
     /* The flash overlay is baked into the frame, and the next frame copies
      * this one, so both the flash and the frame after it redraw everything. */
+    uint64_t images_hash = collect_frame_images(t);
     bool full = r->force_full || buf->width != r->last_width ||
                 buf->height != r->last_height || t->colors_changed || t->view_changed ||
-                t->selection_changed || r->bell_on || r->last_bell_on;
+                t->selection_changed || r->bell_on || r->last_bell_on ||
+                images_hash != r->last_images_hash;
 
     /* A different buffer than last time holds an older frame. Backends only
      * free buffers on a size change, so last_buf is valid if sizes match. */
@@ -617,5 +661,6 @@ void render_frame(struct renderer *r, struct term *t, struct buffer *buf,
     r->last_buf = buf;
     r->last_width = buf->width;
     r->last_height = buf->height;
+    r->last_images_hash = images_hash;
     r->force_full = false;
 }

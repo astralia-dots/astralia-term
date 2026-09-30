@@ -28,12 +28,12 @@ struct graphics_src_rect {
 
 /* A placement: either virtual (a=p,U=1), the cols x rows grid a
  * Unicode-placeholder run divides an image's pixels into; or non-virtual
- * (a=p/a=T without U=1, or a decoded sixel), whose cols x rows cells were
- * written directly into the grid at creation time (see
- * graphics_place_nonvirtual()). placement_id is the client's p= key (0 = none)
- * and is only unique per image. A non-virtual placement also gets a store-wide
- * unique handle, which its ATTR_IMAGE cells carry in place of an image ID (see
- * graphics_placement_get_nonvirtual). src_* is always a resolved, in-bounds
+ * (a=p/a=T without U=1, or a decoded sixel), anchored by a single ATTR_IMAGE
+ * cell at its top-left and drawn over the cols x rows cells below and right
+ * of it (see graphics_place_nonvirtual()). placement_id is the client's p=
+ * key (0 = none) and is only unique per image. A non-virtual placement also
+ * gets a store-wide unique handle, which its anchor cell carries in place of
+ * an image ID (see graphics_placement_get_nonvirtual). src_* is always a resolved, in-bounds
  * rectangle of the image. */
 struct graphics_placement {
     uint32_t image_id, placement_id;
@@ -93,9 +93,9 @@ struct graphics_placement *graphics_placement_get(struct graphics_store *g, uint
  * choose any virtual placement of the given image" fallback. */
 struct graphics_placement *graphics_placement_get_any(struct graphics_store *g, uint32_t image_id);
 
-/* NULL if no non-virtual placement with that handle exists. An ATTR_IMAGE cell
- * carries only a handle (no image ID), so this is the lookup render.c uses to
- * recover the image and the placement's cols/rows/source rectangle. */
+/* NULL if no non-virtual placement with that handle exists. An anchor cell
+ * carries only a handle (no image ID), so this is the lookup that recovers
+ * the image and the placement's cols/rows/source rectangle. */
 struct graphics_placement *graphics_placement_get_nonvirtual(struct graphics_store *g,
                                                               uint32_t handle);
 
@@ -104,14 +104,22 @@ struct graphics_placement *graphics_placement_get_nonvirtual(struct graphics_sto
  * straight alpha). */
 uint32_t graphics_store_insert(struct graphics_store *g, uint8_t *rgba, int width, int height);
 
-/* Creates the non-virtual placement (image_id, placement_id) and writes it
- * into t's grid at the cursor, row by row, advancing the cursor exactly as
- * term_print() would for printed text: through the existing newline/scroll-at-
- * bottom-margin path, landing one column past the placement's right edge on
- * its last row. A nonzero placement_id that already exists for image_id is
- * replaced (its old cells are blanked). move_cursor == false (C=1) restores
+/* Creates the non-virtual placement (image_id, placement_id), writes its
+ * anchor cell at the cursor, and advances the cursor exactly as term_print()
+ * would for printed text: through the existing newline/scroll-at-bottom-margin
+ * path, landing one column past the placement's right edge on its last row.
+ * A nonzero placement_id that already exists for image_id is replaced (its old
+ * anchor is blanked). move_cursor == false (C=1) restores
  * the cursor to where the placement started. cols/rows are the caller's
  * already-resolved (defaulted, clamped to 255) placement size; src is
  * normalized against the image (zero rect = whole image). */
 void graphics_place_nonvirtual(struct term *t, uint32_t image_id, uint32_t placement_id,
                                int cols, int rows, struct graphics_src_rect src, bool move_cursor);
+
+typedef void (*graphics_anchor_fn)(void *user, struct graphics_placement *p, int row, int col);
+
+/* Calls fn for every non-virtual placement on t's active screen whose area
+ * reaches live rows [row_lo, row_hi] (negative rows are scrollback), with its
+ * anchor's live row and column. Anchors are scanned from 254 rows above
+ * row_lo, since a placement is at most 255 rows tall. */
+void graphics_each_anchor(struct term *t, int row_lo, int row_hi, graphics_anchor_fn fn, void *user);

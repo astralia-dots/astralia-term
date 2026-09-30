@@ -31,11 +31,11 @@
 - `vt_osc.c`: OSC handlers: title, palette and fg/bg/cursor color set/query/reset, OSC 8 hyperlinks, OSC 52 clipboard writes (reads denied).
 - `hyperlink.h`+`.c`: Hash-deduplicated `(id, uri)` table for OSC 8; cells store a 16-bit handle in `tile_row`/`tile_col` behind `ATTR_LINK`.
 - `url.h`+`.c`: Link under a cell (OSC 8 run or wrapped plain-text URL, none on the cursor's typing line), per-row link mask for the always-on underline, hover range.
-- `grid.h`+`.c`: 20-byte `struct cell` (`ATTR_IMAGE` cells carry a placement ID in `ul` and `tile_row`/`tile_col`), tagged colors, lazy rows, scrollback ring with `dirty` flags, reflowing resize tracking `grid_point`s, per-screen kitty keyboard protocol flags stack.
+- `grid.h`+`.c`: 20-byte `struct cell` (an `ATTR_IMAGE` cell is a placement's top-left anchor, handle in `ul`), tagged colors, lazy rows, scrollback ring with `dirty` flags, reflowing resize tracking `grid_point`s (only soft-wrapped and cursor lines re-wrap; other rows clip into a per-row `overflow` restored on widening), per-screen kitty keyboard protocol flags stack.
 - `selection.h`+`.c`: Character/word/line selection: click/word/line boundary classification, drag extension, row-span query, UTF-8 extraction, scroll and reflow-resize adjustment, clearing when selected rows are written or erased.
 - `composed.h`+`.c`: Hash-deduplicated table of base plus combining codepoint chains; cells store `COMPOSED_BASE + index`.
 - `kitty_placeholder.h`+`.c`: Unicode-placeholder diacritic decode and left-neighbor inheritance for virtual placements, factored out of `render.c` for standalone testing.
-- `graphics.h`+`.c`: Kitty graphics protocol APC transport: control-data parsing, `m=`-chunk reassembly, `direct`/`file` transmission, formats 24/32/100 (`libspng`), `o=z` (`zlib`), a 64 MB LRU image store, `a=t`/`T`/`q`/`p`/`d`; virtual and non-virtual placements (the latter written into the grid as `ATTR_IMAGE` cells, cursor-advanced like printed text); `graphics_store_insert()` for internally-decoded (sixel) images; `id=0` (anonymous, no `i=` key) is processed normally but never replied to.
+- `graphics.h`+`.c`: Kitty graphics protocol APC transport: control-data parsing, `m=`-chunk reassembly, `direct`/`file` transmission, formats 24/32/100 (`libspng`), `o=z` (`zlib`), a 64 MB LRU image store, `a=t`/`T`/`q`/`p`/`d`; virtual and non-virtual placements (the latter anchored by one `ATTR_IMAGE` cell that scrolls, reflows and erases like text, cursor-advanced like printed text); `graphics_each_anchor()` finds placements reaching given rows; `graphics_store_insert()` for internally-decoded (sixel) images; `id=0` (anonymous, no `i=` key) is processed normally but never replied to.
 - `sixel.h`+`.c`: Sixel DCS body decoder (raster attributes, RGB/HLS color registers, repeat counts, band control) into a straight-alpha RGBA buffer; adapted from foot's algorithm, simplified to buffer-in/pixmap-out.
 
 ## src/input
@@ -45,7 +45,7 @@
 
 ## src/render
 
-- `render.h`+`.c`: Draws dirty or scrolled-back rows, composed glyphs, selection highlight, blinking cursor, always-on link underline with accent (`#9B57F4`) hover highlight, visual-bell flash into premultiplied `pixman` buffers; translucent default background; damage.
+- `render.h`+`.c`: Draws dirty or scrolled-back rows, composed glyphs, selection highlight, blinking cursor, always-on link underline with accent (`#9B57F4`) hover highlight, non-virtual images composited over text from their anchors (full redraw when the visible set changes), visual-bell flash into premultiplied `pixman` buffers; translucent default background; damage.
 - `boxdraw.h`+`.c`: Procedural `U+2500..U+259F`: line, dash and block rectangles, plus supersampled coverage masks for arcs and diagonals; no `pixman` dependency.
 - `font.h`+`.c`: `fcft` wrapper loading a `fontconfig` pattern per style at a given dpi; glyph and grapheme lookup, cell metrics, atomic reload, pattern size substitution.
 
@@ -61,10 +61,10 @@
 
 ## test/term
 
-- `test_grid.c`: `cp_width()`, then `term` byte streams: wrapping, scrolling, erase, alt screen, replies, reflow, combining, `DECRQM`/`XTWINOPS`, mouse tracking modes, scrollback view, selection click/word/line/extraction/scroll/resize/cancellation; regressions feeding `testdata/fastfetch-sixel-regression.raw` and `testdata/fastfetch-kitty-regression.raw`.
+- `test_grid.c`: `cp_width()`, then `term` byte streams: wrapping, scrolling, erase, alt screen, replies, reflow, combining, `DECRQM`/`XTWINOPS`, mouse tracking modes, scrollback view, resize clipping with `overflow` round-trip, selection click/word/line/extraction/scroll/resize/cancellation; regressions feeding `testdata/fastfetch-sixel-regression.raw` and `testdata/fastfetch-kitty-regression.raw`.
 - `test_osc.c`: OSC title, palette and dynamic color set/query/reset with both terminators, OSC 8 links (dedup, ids, scroll, erase, limits, reset), OSC 52 decode, base64.
 - `test_url.c`: OSC 8 runs across SGR reset and erase; plain-text URL detection across wraps, paren/punctuation trimming, typing-line exclusion, per-row link mask, hover.
-- `test_graphics.c`: Kitty graphics APC control-data parsing, chunk reassembly, raw/`zlib`/PNG payloads, quiet modes, query, delete, quota eviction, virtual and non-virtual placement creation/cursor-advance/default-sizing/`a=d` erase, anonymous (`id=0`) transmit/placement with no reply.
+- `test_graphics.c`: Kitty graphics APC control-data parsing, chunk reassembly, raw/`zlib`/PNG payloads, quiet modes, query, delete, quota eviction, virtual and non-virtual placement creation/cursor-advance/default-sizing/`a=d` erase by anchor and by area, anchor lookup above queried rows, anonymous (`id=0`) transmit/placement with no reply.
 - `test_kitty_placeholder.c`: Diacritic table round-trip, left-neighbor inheritance rule, id extraction.
 - `test_sixel.c`: Sixel decoder correctness: raster sizing, RGB/HLS color registers, repeat counts, band transitions, a pixel-for-pixel reference image.
 

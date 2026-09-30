@@ -233,9 +233,10 @@ placement_free(struct graphics_store *g, struct graphics_placement *p) {
     free(p);
 }
 
-/* Blanks every ATTR_IMAGE cell (in both screens' grids, scrollback
- * included) carrying handle, so deleting a placement is correct even for rows
- * currently scrolled out of view. */
+/* Blanks the anchor cell carrying handle (in both screens' grids, scrollback
+ * and resize overflow included), so deleting a placement is correct even for
+ * rows currently scrolled out of view or clipped. The renderer notices the
+ * anchor is gone and redraws the rows the image covered. */
 static void
 blank_cells_for_handle(struct term *t, uint32_t handle) {
     struct grid *grids[2] = {&t->normal, &t->alt};
@@ -245,8 +246,8 @@ blank_cells_for_handle(struct term *t, uint32_t handle) {
             struct row *row = &gr->lines[i];
             if (row->cells == NULL)
                 continue;
-            for (int col = 0; col < gr->cols; col++) {
-                struct cell *cell = &row->cells[col];
+            for (int col = 0; col < gr->cols + row->overflow_len; col++) {
+                struct cell *cell = col < gr->cols ? &row->cells[col] : &row->overflow[col - gr->cols];
                 if ((cell->attrs & ATTR_IMAGE) && cell->ul == handle) {
                     *cell = (struct cell){0};
                     row->dirty = true;
@@ -257,8 +258,8 @@ blank_cells_for_handle(struct term *t, uint32_t handle) {
 }
 
 /* Defaults cols/rows (when either is <= 0) from the source rectangle's pixel
- * size and the terminal's cell size, then clamps to [1, 255]: tile_row/tile_col
- * are uint8_t, and a placement wider or taller than that has no real use case. */
+ * size and the terminal's cell size, then clamps to [1, 255]: graphics_each_anchor()
+ * looks back only that far, and a larger placement has no real use case. */
 static void
 resolve_placement_size(const struct term *t, struct graphics_src_rect src, int in_cols, int in_rows,
                        int *out_cols, int *out_rows) {
@@ -290,19 +291,10 @@ void graphics_place_nonvirtual(struct term *t, uint32_t image_id, uint32_t place
             ->handle;
 
     int start_col = t->cursor.col;
+    grid_row(t->grid, t->cursor.row)->cells[start_col] = (struct cell){.ul = handle, .attrs = ATTR_IMAGE};
     for (int r = 0; r < rows; r++) {
         selection_on_rows(t, t->cursor.row, t->cursor.row);
-        struct row *row = grid_row(t->grid, t->cursor.row);
-        int end_col = MIN(start_col + cols, t->cols);
-        for (int col = start_col; col < end_col; col++) {
-            row->cells[col] = (struct cell){
-                .ul = handle,
-                .attrs = ATTR_IMAGE,
-                .tile_row = (uint8_t)r,
-                .tile_col = (uint8_t)(col - start_col),
-            };
-        }
-        row->dirty = true;
+        grid_row(t->grid, t->cursor.row)->dirty = true;
         if (r < rows - 1)
             term_index(t);
     }
@@ -890,42 +882,54 @@ delete_placements(struct term *t, const struct placement_filter *f, bool free_im
     free(ids);
 }
 
-/* Deletes every non-virtual placement with a cell inside the given screen
+void graphics_each_anchor(struct term *t, int row_lo, int row_hi, graphics_anchor_fn fn, void *user) {
+    int from = MAX(row_lo - 254, -t->grid->scrollback_used);
+    int to = MIN(row_hi, t->rows - 1);
+    for (int r = from; r <= to; r++) {
+        const struct row *row = grid_row(t->grid, r);
+        for (int col = 0; col < t->cols; col++) {
+            if (!(row->cells[col].attrs & ATTR_IMAGE))
+                continue;
+            struct graphics_placement *p = graphics_placement_get_nonvirtual(&t->graphics, row->cells[col].ul);
+            if (p != NULL && r + p->rows - 1 >= row_lo)
+                fn(user, p, r, col);
+        }
+    }
+}
+
+struct rect_hits {
+    int col_lo, col_hi;
+    uint32_t *handles;
+    size_t n, cap;
+};
+
+static void
+collect_rect_hit(void *user, struct graphics_placement *p, int row, int col) {
+    (void)row;
+    struct rect_hits *h = user;
+    if (col > h->col_hi || col + p->cols - 1 < h->col_lo)
+        return;
+    if (h->n == h->cap) {
+        h->cap = h->cap != 0 ? h->cap * 2 : 8;
+        h->handles = xrealloc(h->handles, h->cap * sizeof(*h->handles));
+    }
+    h->handles[h->n++] = p->handle;
+}
+
+/* Deletes every non-virtual placement whose area overlaps the given screen
  * rectangle (inclusive, 0-based). */
 static void
 delete_placements_at(struct term *t, int col_lo, int col_hi, int row_lo, int row_hi,
                      bool free_images) {
-    uint32_t *handles = NULL;
-    size_t n = 0, cap = 0;
+    struct rect_hits h = {.col_lo = MAX(col_lo, 0), .col_hi = MIN(col_hi, t->cols - 1)};
+    graphics_each_anchor(t, MAX(row_lo, 0), MIN(row_hi, t->rows - 1), collect_rect_hit, &h);
 
-    row_lo = MAX(row_lo, 0);
-    row_hi = MIN(row_hi, t->rows - 1);
-    col_lo = MAX(col_lo, 0);
-    col_hi = MIN(col_hi, t->cols - 1);
-    for (int r = row_lo; r <= row_hi; r++) {
-        struct row *row = grid_row(t->grid, r);
-        for (int col = col_lo; col <= col_hi; col++) {
-            const struct cell *cell = &row->cells[col];
-            if (!(cell->attrs & ATTR_IMAGE))
-                continue;
-            bool seen = false;
-            for (size_t i = 0; i < n; i++)
-                seen = seen || handles[i] == cell->ul;
-            if (seen)
-                continue;
-            if (n == cap) {
-                cap = cap != 0 ? cap * 2 : 8;
-                handles = xrealloc(handles, cap * sizeof(*handles));
-            }
-            handles[n++] = cell->ul;
-        }
-    }
-
-    for (size_t i = 0; i < n; i++) {
-        struct placement_filter f = {.have_handle = true, .handle = handles[i]};
+    /* A handle reported twice is simply not found the second time */
+    for (size_t i = 0; i < h.n; i++) {
+        struct placement_filter f = {.have_handle = true, .handle = h.handles[i]};
         delete_placements(t, &f, free_images);
     }
-    free(handles);
+    free(h.handles);
 }
 
 /* The newest stored image with the given number, or NULL. */

@@ -2,7 +2,7 @@
  * (Copyright (c) 2019 Daniel Eklöf, MIT; see LICENSE) and its hsl.c color
  * conversion. Simplified to a pure buffer-in/pixmap-out function: no
  * incremental streaming and no grid coupling (astralia-term gets scroll/
- * erase for free from the ATTR_IMAGE cell scheme in graphics.c instead of
+ * erase for free from the ATTR_IMAGE anchor cell scheme in graphics.c instead of
  * out-of-band sixel tracking), and no Pan/Pad pixel-doubling -- the
  * aspect-ratio scaling parameters are accepted but ignored, since real-world
  * sixel producers overwhelmingly leave them at their 1:1 default. */

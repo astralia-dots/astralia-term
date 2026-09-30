@@ -18,8 +18,10 @@ void grid_init(struct grid *g, int cols, int rows, int scrollback) {
 void grid_free(struct grid *g) {
     if (g->lines == NULL)
         return;
-    for (int i = 0; i < g->num_lines; i++)
+    for (int i = 0; i < g->num_lines; i++) {
         free(g->lines[i].cells);
+        free(g->lines[i].overflow);
+    }
     free(g->lines);
     g->lines = NULL;
 }
@@ -43,6 +45,10 @@ grid_row(struct grid *g, int r) {
 }
 
 void grid_row_fill(struct row *row, int from, int to, struct cell blank) {
+    free(row->overflow);
+    row->overflow = NULL;
+    row->overflow_len = 0;
+
     struct cell *c = row->cells;
     if (blank.cp == 0 && blank.fg == 0 && blank.bg == 0 && blank.attrs == 0)
         memset(&c[from], 0, (size_t)(to - from) * sizeof(*c));
@@ -183,6 +189,41 @@ out_new_row(struct reflow_out *o) {
 
 #define MAX_POINTS 4
 
+/* Cell i of a row's cells followed by its overflow */
+static struct cell
+src_cell(const struct row *row, int old_cols, int i) {
+    if (i < old_cols)
+        return row->cells != NULL ? row->cells[i] : (struct cell){0};
+    return row->overflow[i - old_cols];
+}
+
+/* Copies src into dst (cols wide, zeroed) up to the right edge and stashes
+ * the rest, trailing blanks trimmed, in dst's overflow. */
+static void
+clip_row(struct row *dst, const struct row *src, int old_cols, int cols) {
+    static const struct cell blank = {0};
+    int len = src->overflow != NULL ? old_cols + src->overflow_len : row_used(src, old_cols);
+    while (len > 0) {
+        struct cell c = src_cell(src, old_cols, len - 1);
+        if (memcmp(&c, &blank, sizeof(blank)) != 0)
+            break;
+        len--;
+    }
+
+    for (int i = 0; i < MIN(len, cols); i++)
+        dst->cells[i] = src_cell(src, old_cols, i);
+    if (len > cols) {
+        dst->overflow_len = len - cols;
+        dst->overflow = xmalloc((size_t)dst->overflow_len * sizeof(struct cell));
+        for (int i = cols; i < len; i++)
+            dst->overflow[i - cols] = src_cell(src, old_cols, i);
+        /* Don't leave half a wide character at the right edge; it is lost */
+        if (dst->overflow[0].cp == CELL_SPACER)
+            dst->cells[cols - 1] = dst->overflow[0] = blank;
+    }
+    dst->wrapped = src->wrapped;
+}
+
 static void
 resize_reflow(struct grid *g, int cols, int rows, struct grid_point *points, int npoints) {
     const int old_cols = g->cols;
@@ -196,7 +237,26 @@ resize_reflow(struct grid *g, int cols, int rows, struct grid_point *points, int
         while (e < g->rows - 1 && ring_row(g, e)->wrapped)
             e++;
 
-        int len = (e - r) * old_cols + row_used(ring_row(g, e), old_cols);
+        /* Only soft-wrapped text and the cursor's line re-wrap; cursor-drawn
+         * rows are clipped so they never tear. */
+        bool has_cursor = npoints > 0 && points[0].row >= r && points[0].row <= e;
+        if (r == e && !has_cursor) {
+            int di = out_new_row(&o);
+            clip_row(&o.rows[di], ring_row(g, r), old_cols, cols);
+            for (int p = 0; p < npoints; p++) {
+                if (points[p].row == r) {
+                    out_pt[p] = (struct grid_point){di, MIN(points[p].col, cols - 1)};
+                    found[p] = true;
+                }
+            }
+            r = e + 1;
+            continue;
+        }
+
+        /* Only the last row's overflow joins the line; a middle row's is lost */
+        const struct row *last = ring_row(g, e);
+        int last_len = last->overflow != NULL ? old_cols + last->overflow_len : row_used(last, old_cols);
+        int len = (e - r) * old_cols + last_len;
         int offs[MAX_POINTS];
         for (int p = 0; p < npoints; p++) {
             offs[p] = -1;
@@ -209,13 +269,15 @@ resize_reflow(struct grid *g, int cols, int rows, struct grid_point *points, int
         int di = out_new_row(&o);
         int col = 0;
         for (int i = 0; i < len; i++) {
-            const struct row *src = ring_row(g, r + i / old_cols);
-            int sc = i % old_cols;
-            struct cell c = src->cells != NULL ? src->cells[sc] : (struct cell){0};
+            int k = MIN(r + i / old_cols, e);
+            const struct row *src = ring_row(g, k);
+            int sc = i - (k - r) * old_cols;
+            int src_len = k == e ? last_len : old_cols;
+            struct cell c = sc < src_len ? src_cell(src, old_cols, sc) : (struct cell){0};
             if (c.cp == CELL_SPACER)
                 continue; /* placed together with its head */
 
-            int w = sc + 1 < old_cols && src->cells != NULL && src->cells[sc + 1].cp == CELL_SPACER ? 2 : 1;
+            int w = sc + 1 < src_len && src_cell(src, old_cols, sc + 1).cp == CELL_SPACER ? 2 : 1;
             if (w > cols) {
                 c = (struct cell){0};
                 w = 1;
@@ -251,7 +313,7 @@ resize_reflow(struct grid *g, int cols, int rows, struct grid_point *points, int
     /* Drop trailing blank rows below the content and the tracked points */
     int keep = 0;
     for (int i = 0; i < o.count; i++) {
-        if (row_used(&o.rows[i], cols) > 0)
+        if (row_used(&o.rows[i], cols) > 0 || o.rows[i].overflow != NULL)
             keep = i + 1;
     }
     for (int p = 0; p < npoints; p++) {
@@ -271,8 +333,10 @@ resize_reflow(struct grid *g, int cols, int rows, struct grid_point *points, int
     for (int i = 0; i < o.count; i++) {
         if (i >= start && i < end)
             *ring_row(&ng, i - top) = o.rows[i];
-        else
+        else {
             free(o.rows[i].cells);
+            free(o.rows[i].overflow);
+        }
     }
     ng.scrollback_used = top - start;
     free(o.rows);

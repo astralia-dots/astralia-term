@@ -90,3 +90,5 @@ Drop an entry once newer knowledge fully supersedes it.
 - **`yazi` sends `a=T,U=1,t=s` with no `c=`/`r=`.** A virtual placement without a size must default from the image and cell size, or its preview is blank.
 - **A `Delete`/`BackSpace` keysym maps to a control code point in `xkb_keysym_to_utf32`.** Kitty alternate-key reporting must skip functional keys, or `Delete` is sent as `CSI 3:127~` and `yazi` drops it.
 - **A `static_library()`'s consumers need every dependency its linked-in objects reference, not just the ones the consumer calls directly.** `term.c` calling into `graphics.c` means every test that calls `term_init` (`test_grid`, `test_osc`, `test_input`), not only `test_graphics`, must also list `zlib`/`libspng` in its own `dependencies:`.
+- **A non-virtual image lives in one `ATTR_IMAGE` anchor cell; erasing that cell removes the whole image.** Tile cells tore images on reflow; the anchor moves with text instead.
+- **`render_frame()` redraws in full whenever the visible placement hash changes.** Image pixels span rows the anchor's row doesn't dirty, so they'd otherwise go stale.

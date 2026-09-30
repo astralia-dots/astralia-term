@@ -24,9 +24,9 @@ enum cell_attr {
     ATTR_INVISIBLE = 1 << 8,
     ATTR_STRIKE = 1 << 9,
     ATTR_OVERLINE = 1 << 10,
-    /* Cell is part of a non-virtual graphics placement: `ul` is a placement
-     * ID (not an underline color), `cp` is 0, and tile_row/tile_col give
-     * this cell's position within the placement's cell grid. */
+    /* Cell is the top-left anchor of a non-virtual graphics placement: `ul`
+     * is a placement handle (not an underline color), `cp` is 0; the image
+     * is drawn over the cells below and right of it. */
     ATTR_IMAGE = 1 << 11,
     /* Cell is inside an OSC 8 hyperlink: tile_row/tile_col hold the link
      * handle (high/low byte); never set together with ATTR_IMAGE. */
@@ -53,13 +53,16 @@ struct cell {
     uint32_t fg, bg;
     uint32_t ul; /* underline color (SGR 58/59); kitty graphics placement ID */
     uint16_t attrs;
-    uint8_t tile_row, tile_col; /* ATTR_IMAGE: position within the placement's cell grid;
-                                   ATTR_LINK: hyperlink handle */
+    uint8_t tile_row, tile_col; /* ATTR_LINK: hyperlink handle */
 };
 _Static_assert(sizeof(struct cell) == 20, "struct cell must be 20 bytes");
 
 struct row {
     struct cell *cells; /* NULL until first touched */
+    /* Cells clipped off the right edge by a resize, restored on widening;
+     * dropped by grid_row_fill() and row reuse. */
+    struct cell *overflow;
+    int overflow_len;
     bool dirty;
     bool wrapped; /* line continues on the next row (soft wrap) */
 };
@@ -98,14 +101,16 @@ struct row *grid_row(struct grid *g, int r);
 int grid_scroll_up(struct grid *g, int top, int bottom, int n, struct cell blank);
 void grid_scroll_down(struct grid *g, int top, int bottom, int n, struct cell blank);
 
-/* Fill cells [from, to) of a row with blank and mark it dirty. */
+/* Fill cells [from, to) of a row with blank and mark it dirty. Also drops
+ * the row's overflow: hidden text must not reappear after an erase. */
 void grid_row_fill(struct row *row, int from, int to, struct cell blank);
 
 void grid_mark_all_dirty(struct grid *g);
 
-/* Resize to cols x rows. With reflow, soft-wrapped lines (scrollback
- * included) are re-wrapped to the new width; without it, rows are
- * truncated and history is dropped. points[0] (the cursor) stays on screen;
+/* Resize to cols x rows. With reflow, soft-wrapped lines and the cursor's
+ * line (scrollback included) are re-wrapped to the new width; any other row
+ * is clipped into its overflow instead, so cursor-drawn layouts never tear.
+ * Without reflow, rows are truncated and history is dropped. points[0] (the cursor) stays on screen;
  * every point is moved along with its text. */
 void grid_resize(struct grid *g, int cols, int rows, bool reflow,
                  struct grid_point *points, int npoints);

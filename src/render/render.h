@@ -24,6 +24,7 @@ struct renderer {
     struct buffer *last_buf;
     int last_width, last_height;
     int last_cursor_row, last_cursor_col;
+    uint64_t last_images_hash; /* visible non-virtual placements and their anchors */
     bool force_full;
 };
 
