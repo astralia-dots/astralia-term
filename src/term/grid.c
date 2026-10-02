@@ -353,9 +353,12 @@ resize_reflow(struct grid *g, int cols, int rows, struct grid_point *points, int
 void grid_resize(struct grid *g, int cols, int rows, bool reflow,
                  struct grid_point *points, int npoints) {
     npoints = MIN(npoints, MAX_POINTS);
+    /* both resize paths rebuild *g from scratch; keyboard mode isn't screen content */
+    __typeof__(g->kitty_kbd) kitty_kbd = g->kitty_kbd;
     if (reflow)
         resize_reflow(g, cols, rows, points, npoints);
     else
         resize_truncate(g, cols, rows, points, npoints);
+    g->kitty_kbd = kitty_kbd;
     grid_mark_all_dirty(g);
 }
