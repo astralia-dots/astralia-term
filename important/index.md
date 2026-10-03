@@ -94,7 +94,7 @@
 
 - `index.md`: Index of every source, test, and build file.
 - `convention.md`: Commenting, formatting, file-structure, include, logging, and dependency rules.
-- `critical-knowledge.md`: Hard-won development rules, one statement plus one explanation each.
+- `knowledge.md`: Hard-won development rules, one statement plus one explanation each.
 
 ## local
 

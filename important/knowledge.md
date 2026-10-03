@@ -1,4 +1,4 @@
-# `astralia-term` development critical knowledge
+# `astralia-term` development knowledge
 
 ## Description
 
